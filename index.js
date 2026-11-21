@@ -390,7 +390,7 @@
                     dino.reset();
                     // The drawing is staggered while all racers share the same start.
                     const displayOffset = 14 * (index - (competitors.length - 1) / 2);
-                    return { competitor, dino, displayOffset, score: null };
+                    return { competitor, dino, displayOffset, result: null };
                 });
                 this.tRex = this.racers[0].dino;
                 this.activated = true;
@@ -584,7 +584,7 @@
                         this.inverted);
                 }
 
-                // In a race, only the last elimination ends the round.
+                // A collision ends the race once all competitors are eliminated.
                 const obstacles = this.horizon.obstacles;
                 const roundOver = hasObstacles && obstacles.length > 0 && (this.race ?
                     this.checkRaceCollisions(obstacles) : checkForCollision(obstacles[0], this.tRex));
@@ -595,7 +595,18 @@
                     if (this.currentSpeed < this.config.MAX_SPEED) {
                         this.currentSpeed += this.config.ACCELERATION;
                     }
-                } else {
+                }
+
+                const timeExpired = this.race && this.runningTime >= this.race.timeLimitMs;
+                if (timeExpired) {
+                    for (const racer of this.racers) {
+                        if (racer.result === null) {
+                            this.recordRaceResult(racer, 'time_limit');
+                        }
+                    }
+                }
+
+                if (roundOver || timeExpired) {
                     this.gameOver();
                 }
 
@@ -651,7 +662,7 @@
             const distance = nextObstacle ? nextObstacle.xPos - dinoFront : Infinity;
 
             for (const racer of this.racers) {
-                if (racer.score !== null) continue;
+                if (racer.result !== null) continue;
 
                 const { competitor, dino } = racer;
                 const onGround = !dino.jumping && dino.yPos === dino.groundYPos;
@@ -669,11 +680,10 @@
         checkRaceCollisions: function (obstacles) {
             let hasSurvivors = false;
             for (const racer of this.racers) {
-                if (racer.score !== null) continue;
+                if (racer.result !== null) continue;
 
                 if (obstacles.some(obstacle => checkForCollision(obstacle, racer.dino))) {
-                    racer.score = this.distanceMeter.getActualDistance(Math.ceil(this.distanceRan));
-                    this.race.onElimination(racer.competitor.id, racer.score);
+                    this.recordRaceResult(racer, 'collision');
                 } else {
                     hasSurvivors = true;
                 }
@@ -681,9 +691,15 @@
             return !hasSurvivors;
         },
 
+        recordRaceResult: function (racer, outcome) {
+            const score = this.distanceMeter.getActualDistance(Math.ceil(this.distanceRan));
+            racer.result = { id: racer.competitor.id, score, outcome };
+            this.race.onResult(racer.result);
+        },
+
         drawRacers: function () {
-            for (const { dino, displayOffset, score } of this.racers) {
-                if (score === null) {
+            for (const { dino, displayOffset, result } of this.racers) {
+                if (result === null) {
                     dino.draw(dino.currentAnimFrames[dino.currentFrame], 0, displayOffset);
                 }
             }
@@ -693,8 +709,8 @@
             ctx.font = 'bold 9px system-ui, sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            for (const { competitor, dino, displayOffset, score } of this.racers) {
-                if (score !== null) continue;
+            for (const { competitor, dino, displayOffset, result } of this.racers) {
+                if (result !== null) continue;
 
                 const x = dino.xPos + dino.config.WIDTH / 2 + displayOffset;
                 const y = Math.max(7, dino.yPos - 6);
@@ -881,7 +897,10 @@
             this.crashed = true;
             this.distanceMeter.acheivement = false;
 
-            if (this.race) return;
+            if (this.race) {
+                this.race.onFinish(this.racers.map(racer => racer.result));
+                return;
+            }
 
             this.tRex.update(100, Trex.status.CRASHED);
 
