@@ -8,11 +8,11 @@
      * T-Rex runner.
      * @param {string} outerContainerId Outer containing element id.
      * @param {Object} opt_config
-     * @param {Object} opt_autoplayController
+     * @param {Object} opt_race
      * @constructor
      * @export
      */
-    function Runner(outerContainerId, opt_config, opt_autoplayController) {
+    function Runner(outerContainerId, opt_config, opt_race) {
         // Singleton
         if (Runner.instance_) {
             return Runner.instance_;
@@ -25,7 +25,7 @@
         this.detailsButton = this.outerContainerEl.querySelector('#details-button');
 
         this.config = opt_config || Runner.config;
-        this.autoplayController = opt_autoplayController;
+        this.race = opt_race;
 
         this.dimensions = Runner.defaultDimensions;
 
@@ -380,22 +380,27 @@
             this.distanceMeter = new DistanceMeter(this.canvas,
                 this.spriteDef.TEXT_SPRITE, this.dimensions.WIDTH);
 
-            // Draw t-rex
-            this.tRex = new Trex(this.canvas, this.spriteDef.TREX);
-
             this.outerContainerEl.appendChild(this.containerEl);
 
-            if (IS_MOBILE) {
-                this.createTouchController();
-            }
-
-            if (this.autoplayController) {
-                this.tRex.xPos = this.tRex.config.START_X_POS;
-                this.containerEl.style.width = this.dimensions.WIDTH + 'px';
+            if (this.race) {
+                this.racers = this.race.competitors.map((competitor, index, competitors) => {
+                    const sprite = tintSprite(Runner.imageSprite, competitor.color);
+                    const dino = new Trex(this.canvas, this.spriteDef.TREX, sprite);
+                    dino.xPos = dino.config.START_X_POS;
+                    dino.reset();
+                    // The drawing is staggered while all racers share the same start.
+                    const displayOffset = 14 * (index - (competitors.length - 1) / 2);
+                    return { competitor, dino, displayOffset, score: null };
+                });
+                this.tRex = this.racers[0].dino;
                 this.activated = true;
                 this.startGame();
                 this.play();
             } else {
+                this.tRex = new Trex(this.canvas, this.spriteDef.TREX);
+                if (IS_MOBILE) {
+                    this.createTouchController();
+                }
                 this.startListening();
                 this.update();
             }
@@ -436,7 +441,7 @@
 
             this.dimensions.WIDTH = this.outerContainerEl.offsetWidth - padding * 2;
             this.dimensions.WIDTH = Math.min(DEFAULT_WIDTH, this.dimensions.WIDTH); //Arcade Mode
-            if (this.activated) {
+            if (this.activated && !this.race) {
                 this.setArcadeModeContainerScale();
             }
             
@@ -450,14 +455,18 @@
                 this.distanceMeter.calcXPos(this.dimensions.WIDTH);
                 this.clearCanvas();
                 this.horizon.update(0, 0, true);
-                this.tRex.update(0);
+                if (this.race) {
+                    this.drawRacers();
+                } else {
+                    this.tRex.update(0);
+                }
 
                 // Outer container and distance meter.
                 if (this.playing || this.crashed || this.paused) {
-                    this.containerEl.style.width = this.dimensions.WIDTH + 'px';
-                    this.containerEl.style.height = this.dimensions.HEIGHT + 'px';
                     this.distanceMeter.update(0, Math.ceil(this.distanceRan));
-                    if (!this.autoplayController) {
+                    if (!this.race) {
+                        this.containerEl.style.width = this.dimensions.WIDTH + 'px';
+                        this.containerEl.style.height = this.dimensions.HEIGHT + 'px';
                         this.stop();
                     }
                 } else {
@@ -514,10 +523,12 @@
          * Update the game status to started.
          */
         startGame: function () {
-            this.setArcadeMode();
+            if (!this.race) {
+                this.setArcadeMode();
+                this.tRex.playingIntro = false;
+            }
             this.runningTime = 0;
             this.playingIntro = false;
-            this.tRex.playingIntro = false;
             this.containerEl.style.webkitAnimation = '';
             this.playCount++;
 
@@ -550,11 +561,9 @@
             if (this.playing) {
                 this.clearCanvas();
 
-                if (this.autoplayController) {
-                    this.updateAutoplay();
-                }
-
-                if (this.tRex.jumping) {
+                if (this.race) {
+                    this.updateRacers(deltaTime);
+                } else if (this.tRex.jumping) {
                     this.tRex.updateJump(deltaTime);
                 }
 
@@ -562,7 +571,7 @@
                 var hasObstacles = this.runningTime > this.config.CLEAR_TIME;
 
                 // First jump triggers the intro.
-                if (this.tRex.jumpCount == 1 && !this.playingIntro) {
+                if (!this.race && this.tRex.jumpCount == 1 && !this.playingIntro) {
                     this.playIntro();
                 }
 
@@ -575,11 +584,12 @@
                         this.inverted);
                 }
 
-                // Check for collisions.
-                var collision = hasObstacles &&
-                    checkForCollision(this.horizon.obstacles[0], this.tRex);
+                // In a race, only the last elimination ends the round.
+                const obstacles = this.horizon.obstacles;
+                const roundOver = hasObstacles && obstacles.length > 0 && (this.race ?
+                    this.checkRaceCollisions(obstacles) : checkForCollision(obstacles[0], this.tRex));
 
-                if (!collision) {
+                if (!roundOver) {
                     this.distanceRan += this.currentSpeed * deltaTime / this.msPerFrame;
 
                     if (this.currentSpeed < this.config.MAX_SPEED) {
@@ -587,6 +597,10 @@
                     }
                 } else {
                     this.gameOver();
+                }
+
+                if (this.race) {
+                    this.drawRacers();
                 }
 
                 var playAchievementSound = this.distanceMeter.update(deltaTime,
@@ -621,24 +635,75 @@
 
             if (this.playing || (!this.activated &&
                 this.tRex.blinkCount < Runner.config.MAX_BLINK_COUNT)) {
-                this.tRex.update(deltaTime);
+                if (!this.race) {
+                    this.tRex.update(deltaTime);
+                }
                 this.scheduleNextUpdate();
             }
         },
 
         /**
-         * Read the next obstacle and apply the controller's jump decision.
+         * Advance each surviving competitor against the same obstacle positions.
          */
-        updateAutoplay: function () {
-            const dinoFront = this.tRex.xPos + this.tRex.config.WIDTH;
-            const nextObstacle = this.horizon.obstacles.find(obstacle =>
-                obstacle.xPos >= dinoFront);
+        updateRacers: function (deltaTime) {
+            const dinoFront = Trex.config.START_X_POS + Trex.config.WIDTH;
+            const nextObstacle = this.horizon.obstacles.find(obstacle => obstacle.xPos >= dinoFront);
             const distance = nextObstacle ? nextObstacle.xPos - dinoFront : Infinity;
-            const onGround = !this.tRex.jumping && this.tRex.yPos === this.tRex.groundYPos;
 
-            if (this.autoplayController.shouldJump(distance, this.currentSpeed, onGround)) {
-                this.tRex.startJump(this.currentSpeed);
+            for (const racer of this.racers) {
+                if (racer.score !== null) continue;
+
+                const { competitor, dino } = racer;
+                const onGround = !dino.jumping && dino.yPos === dino.groundYPos;
+                if (competitor.shouldJump(distance, this.currentSpeed, onGround)) {
+                    dino.startJump(this.currentSpeed);
+                }
+                if (dino.jumping) {
+                    dino.updateJump(deltaTime);
+                } else {
+                    dino.update(deltaTime);
+                }
             }
+        },
+
+        checkRaceCollisions: function (obstacles) {
+            let hasSurvivors = false;
+            for (const racer of this.racers) {
+                if (racer.score !== null) continue;
+
+                if (obstacles.some(obstacle => checkForCollision(obstacle, racer.dino))) {
+                    racer.score = this.distanceMeter.getActualDistance(Math.ceil(this.distanceRan));
+                    this.race.onElimination(racer.competitor.id, racer.score);
+                } else {
+                    hasSurvivors = true;
+                }
+            }
+            return !hasSurvivors;
+        },
+
+        drawRacers: function () {
+            for (const { dino, displayOffset, score } of this.racers) {
+                if (score === null) {
+                    dino.draw(dino.currentAnimFrames[dino.currentFrame], 0, displayOffset);
+                }
+            }
+
+            const ctx = this.canvasCtx;
+            ctx.save();
+            ctx.font = 'bold 9px system-ui, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            for (const { competitor, dino, displayOffset, score } of this.racers) {
+                if (score !== null) continue;
+
+                const x = dino.xPos + dino.config.WIDTH / 2 + displayOffset;
+                const y = Math.max(7, dino.yPos - 6);
+                ctx.fillStyle = competitor.color;
+                ctx.fillRect(x - 6, y - 6, 12, 12);
+                ctx.fillStyle = '#fff';
+                ctx.fillText(competitor.id, x, y);
+            }
+            ctx.restore();
         },
 
         /**
@@ -816,6 +881,8 @@
             this.crashed = true;
             this.distanceMeter.acheivement = false;
 
+            if (this.race) return;
+
             this.tRex.update(100, Trex.status.CRASHED);
 
             // Game over panel.
@@ -835,11 +902,6 @@
 
             // Reset the time clock.
             this.time = getTimeStamp();
-
-            if (this.autoplayController) {
-                const score = this.distanceMeter.getActualDistance(Math.ceil(this.distanceRan));
-                this.autoplayController.onFinish(score);
-            }
         },
 
         stop: function () {
@@ -853,7 +915,7 @@
             if (!this.crashed) {
                 this.playing = true;
                 this.paused = false;
-                if (!this.autoplayController || !this.tRex.jumping) {
+                if (!this.race) {
                     this.tRex.update(0, Trex.status.RUNNING);
                 }
                 this.time = getTimeStamp();
@@ -917,8 +979,8 @@
             if (document.hidden || document.webkitHidden || e.type == 'blur' ||
                 document.visibilityState != 'visible') {
                 this.stop();
-            } else if (!this.crashed && (!this.autoplayController || this.paused)) {
-                if (!this.autoplayController) {
+            } else if (!this.crashed && (!this.race || this.paused)) {
+                if (!this.race) {
                     this.tRex.reset();
                 }
                 this.play();
@@ -1039,6 +1101,22 @@
         canvas.height = height;
         container.appendChild(canvas);
 
+        return canvas;
+    }
+
+    function tintSprite(sprite, color) {
+        const canvas = document.createElement('canvas');
+        canvas.width = sprite.naturalWidth;
+        canvas.height = sprite.naturalHeight;
+
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(sprite, 0, 0);
+        ctx.globalCompositeOperation = 'screen';
+        ctx.fillStyle = color;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        // Restore transparency after blending the tint with the sprite.
+        ctx.globalCompositeOperation = 'destination-in';
+        ctx.drawImage(sprite, 0, 0);
         return canvas;
     }
 
@@ -1564,10 +1642,12 @@
      * @param {Object} spritePos Positioning within image sprite.
      * @constructor
      */
-    function Trex(canvas, spritePos) {
+    function Trex(canvas, spritePos, opt_sprite) {
         this.canvas = canvas;
         this.canvasCtx = canvas.getContext('2d');
         this.spritePos = spritePos;
+        this.sprite = opt_sprite || Runner.imageSprite;
+        this.drawOnUpdate = !opt_sprite;
         this.xPos = 0;
         this.yPos = 0;
         // Position when on the ground.
@@ -1693,7 +1773,9 @@
             this.yPos = this.groundYPos;
             this.minJumpHeight = this.groundYPos - this.config.MIN_JUMP_HEIGHT;
 
-            this.draw(0, 0);
+            if (this.drawOnUpdate) {
+                this.draw(0, 0);
+            }
             this.update(0, Trex.status.WAITING);
         },
 
@@ -1733,10 +1815,12 @@
                     this.config.INTRO_DURATION) * deltaTime);
             }
 
-            if (this.status == Trex.status.WAITING) {
-                this.blink(getTimeStamp());
-            } else {
-                this.draw(this.currentAnimFrames[this.currentFrame], 0);
+            if (this.drawOnUpdate) {
+                if (this.status == Trex.status.WAITING) {
+                    this.blink(getTimeStamp());
+                } else {
+                    this.draw(this.currentAnimFrames[this.currentFrame], 0);
+                }
             }
 
             // Update the frame position.
@@ -1757,8 +1841,9 @@
          * Draw the t-rex to a particular position.
          * @param {number} x
          * @param {number} y
+         * @param {number} displayOffset Horizontal drawing offset from its collision position.
          */
-        draw: function (x, y) {
+        draw: function (x, y, displayOffset = 0) {
             var sourceX = x;
             var sourceY = y;
             var sourceWidth = this.ducking && this.status != Trex.status.CRASHED ?
@@ -1778,9 +1863,9 @@
 
             // Ducking.
             if (this.ducking && this.status != Trex.status.CRASHED) {
-                this.canvasCtx.drawImage(Runner.imageSprite, sourceX, sourceY,
+                this.canvasCtx.drawImage(this.sprite, sourceX, sourceY,
                     sourceWidth, sourceHeight,
-                    this.xPos, this.yPos,
+                    this.xPos + displayOffset, this.yPos,
                     this.config.WIDTH_DUCK, this.config.HEIGHT);
             } else {
                 // Crashed whilst ducking. Trex is standing up so needs adjustment.
@@ -1788,9 +1873,9 @@
                     this.xPos++;
                 }
                 // Standing / running
-                this.canvasCtx.drawImage(Runner.imageSprite, sourceX, sourceY,
+                this.canvasCtx.drawImage(this.sprite, sourceX, sourceY,
                     sourceWidth, sourceHeight,
-                    this.xPos, this.yPos,
+                    this.xPos + displayOffset, this.yPos,
                     this.config.WIDTH, this.config.HEIGHT);
             }
         },
