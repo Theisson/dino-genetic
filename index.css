@@ -9,6 +9,13 @@ html, body {
   height: 100%;
 }
 
+#autoplay-status {
+  margin: 0.5rem 0;
+  color: #333;
+  font: 1rem system-ui, sans-serif;
+  text-align: center;
+}
+
 .icon {
   -webkit-user-select: none;
   user-select: none;

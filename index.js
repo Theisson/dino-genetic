@@ -8,10 +8,11 @@
      * T-Rex runner.
      * @param {string} outerContainerId Outer containing element id.
      * @param {Object} opt_config
+     * @param {Object} opt_autoplayController
      * @constructor
      * @export
      */
-    function Runner(outerContainerId, opt_config) {
+    function Runner(outerContainerId, opt_config, opt_autoplayController) {
         // Singleton
         if (Runner.instance_) {
             return Runner.instance_;
@@ -24,6 +25,7 @@
         this.detailsButton = this.outerContainerEl.querySelector('#details-button');
 
         this.config = opt_config || Runner.config;
+        this.autoplayController = opt_autoplayController;
 
         this.dimensions = Runner.defaultDimensions;
 
@@ -387,8 +389,16 @@
                 this.createTouchController();
             }
 
-            this.startListening();
-            this.update();
+            if (this.autoplayController) {
+                this.tRex.xPos = this.tRex.config.START_X_POS;
+                this.containerEl.style.width = this.dimensions.WIDTH + 'px';
+                this.activated = true;
+                this.startGame();
+                this.play();
+            } else {
+                this.startListening();
+                this.update();
+            }
 
             window.addEventListener(Runner.events.RESIZE,
                 this.debounceResize.bind(this));
@@ -447,7 +457,9 @@
                     this.containerEl.style.width = this.dimensions.WIDTH + 'px';
                     this.containerEl.style.height = this.dimensions.HEIGHT + 'px';
                     this.distanceMeter.update(0, Math.ceil(this.distanceRan));
-                    this.stop();
+                    if (!this.autoplayController) {
+                        this.stop();
+                    }
                 } else {
                     this.tRex.draw(0, 0);
                 }
@@ -538,6 +550,10 @@
             if (this.playing) {
                 this.clearCanvas();
 
+                if (this.autoplayController) {
+                    this.updateAutoplay();
+                }
+
                 if (this.tRex.jumping) {
                     this.tRex.updateJump(deltaTime);
                 }
@@ -607,6 +623,21 @@
                 this.tRex.blinkCount < Runner.config.MAX_BLINK_COUNT)) {
                 this.tRex.update(deltaTime);
                 this.scheduleNextUpdate();
+            }
+        },
+
+        /**
+         * Read the next obstacle and apply the controller's jump decision.
+         */
+        updateAutoplay: function () {
+            const dinoFront = this.tRex.xPos + this.tRex.config.WIDTH;
+            const nextObstacle = this.horizon.obstacles.find(obstacle =>
+                obstacle.xPos >= dinoFront);
+            const distance = nextObstacle ? nextObstacle.xPos - dinoFront : Infinity;
+            const onGround = !this.tRex.jumping && this.tRex.yPos === this.tRex.groundYPos;
+
+            if (this.autoplayController.shouldJump(distance, this.currentSpeed, onGround)) {
+                this.tRex.startJump(this.currentSpeed);
             }
         },
 
@@ -804,6 +835,11 @@
 
             // Reset the time clock.
             this.time = getTimeStamp();
+
+            if (this.autoplayController) {
+                const score = this.distanceMeter.getActualDistance(Math.ceil(this.distanceRan));
+                this.autoplayController.onFinish(score);
+            }
         },
 
         stop: function () {
@@ -817,7 +853,9 @@
             if (!this.crashed) {
                 this.playing = true;
                 this.paused = false;
-                this.tRex.update(0, Trex.status.RUNNING);
+                if (!this.autoplayController || !this.tRex.jumping) {
+                    this.tRex.update(0, Trex.status.RUNNING);
+                }
                 this.time = getTimeStamp();
                 this.update();
             }
@@ -879,8 +917,10 @@
             if (document.hidden || document.webkitHidden || e.type == 'blur' ||
                 document.visibilityState != 'visible') {
                 this.stop();
-            } else if (!this.crashed) {
-                this.tRex.reset();
+            } else if (!this.crashed && (!this.autoplayController || this.paused)) {
+                if (!this.autoplayController) {
+                    this.tRex.reset();
+                }
                 this.play();
             }
         },
@@ -2743,10 +2783,3 @@
         }
     };
 })();
-
-
-function onDocumentLoad() {
-    new Runner('.interstitial-wrapper');
-}
-
-document.addEventListener('DOMContentLoaded', onDocumentLoad);
