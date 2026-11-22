@@ -39,6 +39,84 @@ html, body {
   color: #194ca8;
 }
 
+#training-progress {
+  margin: 0 0 .75rem;
+  font-size: .875rem;
+}
+
+#race-start {
+  margin: 0 0 .75rem;
+  padding: .45rem .8rem;
+  border: 1px solid #194ca8;
+  border-radius: .4rem;
+  background: #194ca8;
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+#track-results {
+  margin-top: .75rem;
+  font-size: .875rem;
+}
+
+#track-results summary {
+  color: #194ca8;
+  cursor: pointer;
+}
+
+.track-results-scroll {
+  overflow-x: auto;
+}
+
+#track-score-table {
+  margin-top: .5rem;
+  border-collapse: collapse;
+}
+
+#track-score-table caption {
+  text-align: left;
+  font-weight: 650;
+}
+
+#track-score-table th,
+#track-score-table td {
+  padding: .4rem .65rem;
+  border-bottom: 1px solid #dbe1eb;
+  text-align: right;
+  white-space: nowrap;
+}
+
+#track-score-table th:first-child {
+  text-align: left;
+}
+
+.race-entry-name {
+  display: block;
+  font-size: .8125rem;
+}
+
+#race-fast:not([hidden]) {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  cursor: pointer;
+}
+
+#fast-training {
+  margin: 0;
+  accent-color: #194ca8;
+}
+
+#race-tie {
+  font: inherit;
+  color: #194ca8;
+  background: #fff;
+  border: 1px solid #dbe1eb;
+  border-radius: .25rem;
+  cursor: pointer;
+}
+
 #race-standings {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));

@@ -40,6 +40,7 @@
         this.highestScore = 0;
 
         this.time = 0;
+        this.backgroundToken = 0;
         this.runningTime = 0;
         this.msPerFrame = 1000 / FPS;
         this.currentSpeed = this.config.SPEED;
@@ -413,18 +414,25 @@
                 this.config.GAP_COEFFICIENT, obstacleRandom, false, this.config);
             this.clearCanvas();
             this.distanceMeter.reset();
+            this.activeRacers = race.competitors.length;
             this.racers = race.competitors.map((competitor, index, competitors) => {
                 const sprite = tintSprite(Runner.imageSprite, competitor.color);
                 const dino = new Trex(this.canvas, this.spriteDef.TREX, sprite);
                 dino.xPos = dino.config.START_X_POS;
                 dino.reset();
                 // The drawing is staggered while all racers share the same start.
-                const displayOffset = 14 * (index - (competitors.length - 1) / 2);
-                return { competitor, dino, displayOffset, result: null };
+                const spacing = Math.min(14, 86 / Math.max(1, competitors.length - 1));
+                const displayOffset = spacing * (index - (competitors.length - 1) / 2);
+                const markerRow = index % Math.ceil(12 / spacing);
+                return { competitor, dino, displayOffset, markerRow, result: null };
             });
             this.tRex = this.racers[0].dino;
+            // A round can start after a response arrives in an already hidden tab.
+            this.backgrounded = race.continueInBackground && this.isBackgrounded();
+            this.fastMode = Boolean(race.fastMode);
+            this.lastBatchRender = 0;
             this.drawRacers();
-            if (!document.hidden) {
+            if (!document.hidden || race.continueInBackground) {
                 this.play();
             }
         },
@@ -592,9 +600,9 @@
             }
         },
 
-        updateFrame: function (deltaTime) {
+        updateFrame: function (deltaTime, render = true) {
             if (this.playing) {
-                this.clearCanvas();
+                if (render) this.clearCanvas();
 
                 if (this.race) {
                     this.updateRacers(deltaTime);
@@ -615,7 +623,9 @@
                 }
 
                 // The horizon doesn't move until the intro is over.
-                if (this.playingIntro) {
+                if (!render) {
+                    if (hasObstacles) this.horizon.updateObstacles(deltaTime, this.currentSpeed, false);
+                } else if (this.playingIntro) {
                     this.horizon.update(0, this.currentSpeed, hasObstacles);
                 } else {
                     deltaTime = !this.activated ? 0 : deltaTime;
@@ -634,19 +644,17 @@
                     this.currentSpeed = accelerate(this.currentSpeed, this.config);
                 }
 
-                const timeExpired = this.race && this.runningTime >= this.race.timeLimitMs;
-                if (timeExpired) {
-                    for (const racer of this.racers) {
-                        if (racer.result === null) {
-                            this.recordRaceResult(racer, 'time_limit');
-                        }
-                    }
-                }
-
-                if (roundOver || timeExpired) {
+                if (roundOver) {
                     this.gameOver();
+                } else if (this.race?.scoreLimit !== undefined && this.getRaceScore() >= this.race.scoreLimit) {
+                    this.finishRace('score_limit');
+                } else if (this.race?.stopAtLast && this.activeRacers === 1) {
+                    this.finishRace('winner');
+                } else if (this.race && this.runningTime >= this.race.timeLimitMs) {
+                    this.finishRace('time_limit');
                 }
 
+                if (!render) return;
                 if (this.race) {
                     this.drawRacers();
                 }
@@ -690,13 +698,14 @@
             const dinoFront = Trex.config.START_X_POS + Trex.config.WIDTH;
             const nextObstacle = this.horizon.obstacles.find(obstacle => obstacle.xPos >= dinoFront);
             const distance = nextObstacle ? nextObstacle.xPos - dinoFront : Infinity;
+            const obstacleWidth = nextObstacle?.width ?? 25;
 
             for (const racer of this.racers) {
                 if (racer.result !== null) continue;
 
                 const { competitor, dino } = racer;
                 const onGround = !dino.jumping && dino.yPos === dino.groundYPos;
-                if (competitor.shouldJump(distance, this.currentSpeed, onGround)) {
+                if (competitor.shouldJump(distance, this.currentSpeed, onGround, obstacleWidth)) {
                     dino.startJump(this.currentSpeed);
                 }
                 if (dino.jumping) {
@@ -708,23 +717,38 @@
         },
 
         checkRaceCollisions: function (obstacles) {
-            let hasSurvivors = false;
             for (const racer of this.racers) {
                 if (racer.result !== null) continue;
 
                 if (obstacles.some(obstacle => checkForCollision(obstacle, racer.dino))) {
                     this.recordRaceResult(racer, 'collision');
-                } else {
-                    hasSurvivors = true;
                 }
             }
-            return !hasSurvivors;
+            return this.activeRacers === 0;
+        },
+
+        getRaceScore: function () {
+            return this.distanceMeter.getActualDistance(Math.ceil(this.distanceRan));
         },
 
         recordRaceResult: function (racer, outcome) {
-            const score = this.distanceMeter.getActualDistance(Math.ceil(this.distanceRan));
+            const score = outcome === 'score_limit' ? this.race.scoreLimit : this.getRaceScore();
             racer.result = { id: racer.competitor.id, score, outcome };
+            this.activeRacers--;
             this.race.onResult(racer.result);
+        },
+
+        finishRace: function (outcome) {
+            for (const racer of this.racers) {
+                if (racer.result === null) this.recordRaceResult(racer, outcome);
+            }
+            this.gameOver();
+        },
+
+        endTiedRace: function () {
+            if (this.race?.stopAtLast && !this.crashed && this.activeRacers > 1) {
+                this.finishRace('tie');
+            }
         },
 
         drawRacers: function () {
@@ -739,11 +763,11 @@
             ctx.font = 'bold 9px system-ui, sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            for (const { competitor, dino, displayOffset, result } of this.racers) {
+            for (const { competitor, dino, displayOffset, markerRow, result } of this.racers) {
                 if (result !== null) continue;
 
                 const x = dino.xPos + dino.config.WIDTH / 2 + displayOffset;
-                const y = Math.max(7, dino.yPos - 6);
+                const y = Math.max(7 + markerRow * 13, dino.yPos - 6 - markerRow * 13);
                 ctx.fillStyle = competitor.color;
                 ctx.fillRect(x - 6, y - 6, 12, 12);
                 ctx.fillStyle = '#fff';
@@ -904,8 +928,45 @@
         scheduleNextUpdate: function () {
             if (!this.updatePending) {
                 this.updatePending = true;
-                this.raqId = requestAnimationFrame(this.update.bind(this));
+                if (this.usesBatches()) {
+                    if (!this.backgroundChannel) {
+                        this.backgroundChannel = new MessageChannel();
+                        this.backgroundChannel.port1.onmessage = event => {
+                            if (event.data === this.backgroundToken) this.advanceBatch();
+                        };
+                    }
+                    this.backgroundChannel.port2.postMessage(++this.backgroundToken);
+                } else {
+                    this.raqId = requestAnimationFrame(this.update.bind(this));
+                }
             }
+        },
+
+        usesBatches: function () {
+            return this.fastMode || (this.race?.continueInBackground && this.backgrounded);
+        },
+
+        setFastMode: function (enabled) {
+            if (this.fastMode === enabled) return;
+            const wasBatching = this.usesBatches();
+            this.fastMode = enabled;
+            if (this.playing && wasBatching !== this.usesBatches()) {
+                this.stop();
+                this.play();
+            }
+        },
+
+        advanceBatch: function () {
+            this.updatePending = false;
+            const stepsPerBatch = 120;
+            const render = this.fastMode && !this.backgrounded &&
+                getTimeStamp() - this.lastBatchRender >= 100;
+            // Keep physics at the same fixed step; draw only occasional previews.
+            for (let step = 0; this.playing && step < stepsPerBatch; step++) {
+                this.updateFrame(this.msPerFrame, render && step === stepsPerBatch - 1);
+            }
+            if (render) this.lastBatchRender = getTimeStamp();
+            if (this.playing) this.scheduleNextUpdate();
         },
 
         /**
@@ -957,7 +1018,9 @@
             this.playing = false;
             this.paused = true;
             cancelAnimationFrame(this.raqId);
+            this.backgroundToken++;
             this.raqId = 0;
+            this.updatePending = false;
         },
 
         play: function () {
@@ -968,7 +1031,11 @@
                     this.tRex.update(0, Trex.status.RUNNING);
                 }
                 this.time = getTimeStamp();
-                this.update();
+                if (this.usesBatches()) {
+                    this.scheduleNextUpdate();
+                } else {
+                    this.update();
+                }
             }
         },
 
@@ -1024,9 +1091,24 @@
         /**
          * Pause the game if the tab is not in focus.
          */
+        isBackgrounded: function () {
+            return document.visibilityState !== 'visible' || !document.hasFocus();
+        },
+
         onVisibilityChange: function (e) {
-            if (document.hidden || document.webkitHidden || e.type == 'blur' ||
-                document.visibilityState != 'visible') {
+            if (this.race?.continueInBackground) {
+                const backgrounded = e.type === 'blur' || this.isBackgrounded();
+                if (this.backgrounded !== backgrounded) {
+                    this.backgrounded = backgrounded;
+                    if (this.playing) {
+                        this.stop();
+                        this.play();
+                    }
+                }
+                return;
+            }
+            if (document.hidden || document.webkitHidden || e.type === 'blur' ||
+                document.visibilityState !== 'visible') {
                 this.stop();
             } else if (!this.crashed && (!this.race || this.paused)) {
                 if (!this.race) {
@@ -1574,7 +1656,7 @@
              * @param {number} deltaTime
              * @param {number} speed
              */
-            update: function (deltaTime, speed) {
+            update: function (deltaTime, speed, render = true) {
                 if (!this.remove) {
                     this.xPos -= this.movement(deltaTime, speed);
 
@@ -1588,7 +1670,7 @@
                             this.timer = 0;
                         }
                     }
-                    this.draw();
+                    if (render) this.draw();
 
                     if (!this.isVisible()) {
                         this.remove = true;
@@ -2942,14 +3024,14 @@
          * @param {number} deltaTime
          * @param {number} currentSpeed
          */
-        updateObstacles: function (deltaTime, currentSpeed) {
+        updateObstacles: function (deltaTime, currentSpeed, render = true) {
             if (this.course) this.course.step++;
             // Obstacles, move to Horizon layer.
             var updatedObstacles = this.obstacles.slice(0);
 
             for (var i = 0; i < this.obstacles.length; i++) {
                 var obstacle = this.obstacles[i];
-                obstacle.update(deltaTime, currentSpeed);
+                obstacle.update(deltaTime, currentSpeed, render);
 
                 // Clean up existing obstacles.
                 if (obstacle.remove) {

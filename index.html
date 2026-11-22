@@ -12,13 +12,25 @@
 
 <body id="t" class="offline race-mode">
     <header class="race-summary">
-        <p id="autoplay-status" role="status">Preparando a disputa…</p>
+        <p id="autoplay-status" role="status">Pronto para começar</p>
+        <button id="race-start" type="button" hidden>Começar</button>
         <nav class="race-actions" aria-label="Opções de pista">
             <a href="?">Sortear nova pista</a>
             <a id="race-evaluate" href="?pistas=3" hidden>Avaliar em 3 pistas</a>
+            <a id="race-train" href="?treino=1" hidden>Treino</a>
+            <a id="race-validate" href="?validacao=1" hidden>Validação</a>
             <a id="race-seed" hidden></a>
+            <label id="race-fast" hidden><input id="fast-training" type="checkbox"> Treino rápido</label>
+            <button id="race-tie" type="button" hidden>Registrar empate e avançar</button>
         </nav>
+        <p id="training-progress" hidden></p>
         <ol id="race-standings" aria-label="Pontuações dos Dinos"></ol>
+        <details id="track-results" hidden>
+            <summary>Resultados por semente</summary>
+            <div class="track-results-scroll">
+                <table id="track-score-table"></table>
+            </div>
+        </details>
     </header>
     <div id="main-frame-error" class="interstitial-wrapper">
         <div id="main-content">
