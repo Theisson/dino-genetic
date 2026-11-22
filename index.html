@@ -13,6 +13,11 @@
 <body id="t" class="offline race-mode">
     <header class="race-summary">
         <p id="autoplay-status" role="status">Preparando a disputa…</p>
+        <nav class="race-actions" aria-label="Opções de pista">
+            <a href="?">Sortear nova pista</a>
+            <a id="race-evaluate" href="?pistas=3" hidden>Avaliar em 3 pistas</a>
+            <a id="race-seed" hidden></a>
+        </nav>
         <ol id="race-standings" aria-label="Pontuações dos Dinos"></ol>
     </header>
     <div id="main-frame-error" class="interstitial-wrapper">

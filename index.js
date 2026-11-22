@@ -27,7 +27,7 @@
         this.config = opt_config || Runner.config;
         this.race = opt_race;
 
-        this.dimensions = Runner.defaultDimensions;
+        this.dimensions = this.race ? { ...Runner.defaultDimensions } : Runner.defaultDimensions;
 
         this.canvas = null;
         this.canvasCtx = null;
@@ -357,8 +357,10 @@
             document.querySelector('.' + Runner.classes.ICON).style.visibility =
                 'hidden';
 
-            this.adjustDimensions();
-            this.setSpeed();
+            if (!this.race) {
+                this.adjustDimensions();
+                this.setSpeed();
+            }
 
             this.containerEl = document.createElement('div');
             this.containerEl.className = Runner.classes.CONTAINER;
@@ -372,41 +374,59 @@
             this.canvasCtx.fill();
             Runner.updateCanvasScaling(this.canvas);
 
-            // Horizon contains clouds, obstacles and the ground.
-            this.horizon = new Horizon(this.canvas, this.spriteDef, this.dimensions,
-                this.config.GAP_COEFFICIENT);
-
-            // Distance meter
             this.distanceMeter = new DistanceMeter(this.canvas,
                 this.spriteDef.TEXT_SPRITE, this.dimensions.WIDTH);
 
             this.outerContainerEl.appendChild(this.containerEl);
 
             if (this.race) {
-                this.racers = this.race.competitors.map((competitor, index, competitors) => {
-                    const sprite = tintSprite(Runner.imageSprite, competitor.color);
-                    const dino = new Trex(this.canvas, this.spriteDef.TREX, sprite);
-                    dino.xPos = dino.config.START_X_POS;
-                    dino.reset();
-                    // The drawing is staggered while all racers share the same start.
-                    const displayOffset = 14 * (index - (competitors.length - 1) / 2);
-                    return { competitor, dino, displayOffset, result: null };
-                });
-                this.tRex = this.racers[0].dino;
                 this.activated = true;
                 this.startGame();
-                this.play();
+                this.startRace(this.race);
             } else {
+                this.horizon = new Horizon(this.canvas, this.spriteDef, this.dimensions,
+                    this.config.GAP_COEFFICIENT);
                 this.tRex = new Trex(this.canvas, this.spriteDef.TREX);
                 if (IS_MOBILE) {
                     this.createTouchController();
                 }
                 this.startListening();
                 this.update();
+                window.addEventListener(Runner.events.RESIZE,
+                    this.debounceResize.bind(this));
             }
+        },
 
-            window.addEventListener(Runner.events.RESIZE,
-                this.debounceResize.bind(this));
+        startRace: function (race) {
+            this.stop();
+            this.race = race;
+            this.crashed = false;
+            this.distanceRan = 0;
+            this.runningTime = 0;
+            this.raceSteps = 0;
+            this.frameAccumulator = 0;
+            this.currentSpeed = this.config.SPEED;
+            this.invert(true);
+
+            const obstacleRandom = createSeededRandom(race.seed);
+            this.horizon = new Horizon(this.canvas, this.spriteDef, this.dimensions,
+                this.config.GAP_COEFFICIENT, obstacleRandom, false, this.config);
+            this.clearCanvas();
+            this.distanceMeter.reset();
+            this.racers = race.competitors.map((competitor, index, competitors) => {
+                const sprite = tintSprite(Runner.imageSprite, competitor.color);
+                const dino = new Trex(this.canvas, this.spriteDef.TREX, sprite);
+                dino.xPos = dino.config.START_X_POS;
+                dino.reset();
+                // The drawing is staggered while all racers share the same start.
+                const displayOffset = 14 * (index - (competitors.length - 1) / 2);
+                return { competitor, dino, displayOffset, result: null };
+            });
+            this.tRex = this.racers[0].dino;
+            this.drawRacers();
+            if (!document.hidden) {
+                this.play();
+            }
         },
 
         /**
@@ -441,7 +461,7 @@
 
             this.dimensions.WIDTH = this.outerContainerEl.offsetWidth - padding * 2;
             this.dimensions.WIDTH = Math.min(DEFAULT_WIDTH, this.dimensions.WIDTH); //Arcade Mode
-            if (this.activated && !this.race) {
+            if (this.activated) {
                 this.setArcadeModeContainerScale();
             }
             
@@ -455,20 +475,14 @@
                 this.distanceMeter.calcXPos(this.dimensions.WIDTH);
                 this.clearCanvas();
                 this.horizon.update(0, 0, true);
-                if (this.race) {
-                    this.drawRacers();
-                } else {
-                    this.tRex.update(0);
-                }
+                this.tRex.update(0);
 
                 // Outer container and distance meter.
                 if (this.playing || this.crashed || this.paused) {
                     this.distanceMeter.update(0, Math.ceil(this.distanceRan));
-                    if (!this.race) {
-                        this.containerEl.style.width = this.dimensions.WIDTH + 'px';
-                        this.containerEl.style.height = this.dimensions.HEIGHT + 'px';
-                        this.stop();
-                    }
+                    this.containerEl.style.width = this.dimensions.WIDTH + 'px';
+                    this.containerEl.style.height = this.dimensions.HEIGHT + 'px';
+                    this.stop();
                 } else {
                     this.tRex.draw(0, 0);
                 }
@@ -558,6 +572,27 @@
             var deltaTime = now - (this.time || now);
             this.time = now;
 
+            if (this.race) {
+                // Limit catch-up work after a long browser stall. Physics uses only whole steps.
+                this.frameAccumulator += Math.min(deltaTime, this.msPerFrame * 8);
+                while (this.playing && this.frameAccumulator >= this.msPerFrame) {
+                    this.frameAccumulator -= this.msPerFrame;
+                    this.updateFrame(this.msPerFrame);
+                }
+            } else {
+                this.updateFrame(deltaTime);
+            }
+
+            if (this.playing || (!this.activated &&
+                this.tRex.blinkCount < Runner.config.MAX_BLINK_COUNT)) {
+                if (!this.race) {
+                    this.tRex.update(deltaTime);
+                }
+                this.scheduleNextUpdate();
+            }
+        },
+
+        updateFrame: function (deltaTime) {
             if (this.playing) {
                 this.clearCanvas();
 
@@ -567,7 +602,11 @@
                     this.tRex.updateJump(deltaTime);
                 }
 
-                this.runningTime += deltaTime;
+                if (this.race) {
+                    this.runningTime = ++this.raceSteps * 1000 / FPS;
+                } else {
+                    this.runningTime += deltaTime;
+                }
                 var hasObstacles = this.runningTime > this.config.CLEAR_TIME;
 
                 // First jump triggers the intro.
@@ -592,9 +631,7 @@
                 if (!roundOver) {
                     this.distanceRan += this.currentSpeed * deltaTime / this.msPerFrame;
 
-                    if (this.currentSpeed < this.config.MAX_SPEED) {
-                        this.currentSpeed += this.config.ACCELERATION;
-                    }
+                    this.currentSpeed = accelerate(this.currentSpeed, this.config);
                 }
 
                 const timeExpired = this.race && this.runningTime >= this.race.timeLimitMs;
@@ -644,13 +681,6 @@
                 }
             }
 
-            if (this.playing || (!this.activated &&
-                this.tRex.blinkCount < Runner.config.MAX_BLINK_COUNT)) {
-                if (!this.race) {
-                    this.tRex.update(deltaTime);
-                }
-                this.scheduleNextUpdate();
-            }
         },
 
         /**
@@ -1088,8 +1118,20 @@
      * @param {number} max
      * @param {number}
      */
-    function getRandomNum(min, max) {
-        return Math.floor(Math.random() * (max - min + 1)) + min;
+    function getRandomNum(min, max, random = Math.random) {
+        return Math.floor(random() * (max - min + 1)) + min;
+    }
+
+    function accelerate(speed, config) {
+        return speed < config.MAX_SPEED ? speed + config.ACCELERATION : speed;
+    }
+
+    function createSeededRandom(seed) {
+        let state = seed;
+        return () => {
+            state = (Math.imul(1664525, state) + 1013904223) >>> 0;
+            return state / 4294967296;
+        };
     }
 
 
@@ -1414,13 +1456,15 @@
      * @param {number} opt_xOffset
      */
     function Obstacle(canvasCtx, type, spriteImgPos, dimensions,
-        gapCoefficient, speed, opt_xOffset) {
+        gapCoefficient, speed, opt_xOffset, random, mobile, groupSize) {
 
         this.canvasCtx = canvasCtx;
         this.spritePos = spriteImgPos;
         this.typeConfig = type;
         this.gapCoefficient = gapCoefficient;
-        this.size = getRandomNum(1, Obstacle.MAX_OBSTACLE_LENGTH);
+        this.random = random;
+        this.mobile = mobile;
+        this.size = groupSize ?? getRandomNum(1, Obstacle.MAX_OBSTACLE_LENGTH, random);
         this.dimensions = dimensions;
         this.remove = false;
         this.xPos = dimensions.WIDTH + (opt_xOffset || 0);
@@ -1434,7 +1478,7 @@
         this.currentFrame = 0;
         this.timer = 0;
 
-        this.init(speed);
+        this.init(speed, groupSize === undefined);
     };
 
     /**
@@ -1455,11 +1499,11 @@
              * Initialise the DOM for the obstacle.
              * @param {number} speed
              */
-            init: function (speed) {
+            init: function (speed, limitGroupSize) {
                 this.cloneCollisionBoxes();
 
                 // Only allow sizing if we're at the right speed.
-                if (this.size > 1 && this.typeConfig.multipleSpeed > speed) {
+                if (limitGroupSize && this.size > 1 && this.typeConfig.multipleSpeed > speed) {
                     this.size = 1;
                 }
 
@@ -1467,14 +1511,12 @@
 
                 // Check if obstacle can be positioned at various heights.
                 if (Array.isArray(this.typeConfig.yPos)) {
-                    var yPosConfig = IS_MOBILE ? this.typeConfig.yPosMobile :
+                    var yPosConfig = this.mobile ? this.typeConfig.yPosMobile :
                         this.typeConfig.yPos;
-                    this.yPos = yPosConfig[getRandomNum(0, yPosConfig.length - 1)];
+                    this.yPos = yPosConfig[getRandomNum(0, yPosConfig.length - 1, this.random)];
                 } else {
                     this.yPos = this.typeConfig.yPos;
                 }
-
-                this.draw();
 
                 // Make collision box adjustments,
                 // Central box is adjusted to the size as one box.
@@ -1492,7 +1534,7 @@
 
                 // For obstacles that go at a different speed from the horizon.
                 if (this.typeConfig.speedOffset) {
-                    this.speedOffset = Math.random() > 0.5 ? this.typeConfig.speedOffset :
+                    this.speedOffset = this.random() > 0.5 ? this.typeConfig.speedOffset :
                         -this.typeConfig.speedOffset;
                 }
 
@@ -1534,10 +1576,7 @@
              */
             update: function (deltaTime, speed) {
                 if (!this.remove) {
-                    if (this.typeConfig.speedOffset) {
-                        speed += this.speedOffset;
-                    }
-                    this.xPos -= Math.floor((speed * FPS / 1000) * deltaTime);
+                    this.xPos -= this.movement(deltaTime, speed);
 
                     // Update frame
                     if (this.typeConfig.numFrames) {
@@ -1557,6 +1596,10 @@
                 }
             },
 
+            movement: function (deltaTime, speed) {
+                return Math.floor(((speed + this.speedOffset) * FPS / 1000) * deltaTime);
+            },
+
             /**
              * Calculate a random gap size.
              * - Minimum gap gets wider as speed increses
@@ -1568,7 +1611,7 @@
                 var minGap = Math.round(this.width * speed +
                     this.typeConfig.minGap * gapCoefficient);
                 var maxGap = Math.round(minGap * Obstacle.MAX_GAP_COEFFICIENT);
-                return getRandomNum(minGap, maxGap);
+                return getRandomNum(minGap, maxGap, this.random);
             },
 
             /**
@@ -2677,12 +2720,131 @@
      * @param {number} gapCoefficient
      * @constructor
      */
-    function Horizon(canvas, spritePos, dimensions, gapCoefficient) {
+    class CactusCourse {
+        constructor(canvas, spritePos, dimensions, random, config) {
+            this.canvasCtx = canvas.getContext('2d');
+            this.spritePos = spritePos;
+            this.dimensions = dimensions;
+            this.random = random;
+            this.config = config;
+            this.smallCactus = Obstacle.types.find(type => type.type === 'CACTUS_SMALL');
+            this.largeCactus = Obstacle.types.find(type => type.type === 'CACTUS_LARGE');
+            this.probe = new Trex(canvas, spritePos.TREX, Runner.imageSprite);
+            this.probe.xPos = this.probe.config.START_X_POS;
+            this.step = 0;
+            this.readyStep = 0;
+            this.challenge = false;
+            this.groupsLeft = getRandomNum(2, 4, random);
+        }
+
+        createObstacle(speed) {
+            if (this.groupsLeft === 0) {
+                this.challenge = !this.challenge;
+                this.groupsLeft = this.challenge ? getRandomNum(2, 4, this.random) :
+                    getRandomNum(3, 6, this.random);
+            }
+
+            const largeChance = this.challenge ? 0.75 : 0.4;
+            const type = this.random() < largeChance ? this.largeCactus : this.smallCactus;
+            const groupSize = this.challenge ? getRandomNum(2, 3, this.random) :
+                getRandomNum(1, 2, this.random);
+            for (let size = groupSize; size > 0; size--) {
+                const obstacle = new Obstacle(this.canvasCtx, type,
+                    this.spritePos[type.type], this.dimensions, this.config.GAP_COEFFICIENT,
+                    speed, type.width, this.random, false, size);
+                this.leaveRoomToJump(obstacle, speed);
+
+                let readyStep = this.findReadyStep(obstacle, speed);
+                for (let retry = 0; readyStep === null && retry < 3; retry++) {
+                    obstacle.xPos += Math.ceil(speed) * 3;
+                    readyStep = this.findReadyStep(obstacle, speed);
+                }
+                if (readyStep !== null) {
+                    this.readyStep = readyStep;
+                    this.groupsLeft--;
+                    obstacle.gap = this.challenge ? getRandomNum(55, 125, this.random) :
+                        getRandomNum(230, 360, this.random);
+                    return obstacle;
+                }
+            }
+            return null;
+        }
+
+        leaveRoomToJump(obstacle, speed) {
+            // The next cactus stays ahead until every accepted jump for the previous
+            // group has landed, with extra steps to take off before contact.
+            const approachSteps = this.challenge ? 6 : 12;
+            let travel = 0;
+            for (let step = this.step + 1; step <= this.readyStep + approachSteps; step++) {
+                speed = accelerate(speed, this.config);
+                travel += obstacle.movement(1000 / FPS, speed);
+            }
+            const front = this.probe.xPos + this.probe.config.WIDTH;
+            obstacle.xPos = Math.max(obstacle.xPos, front + travel + 1);
+        }
+
+        findReadyStep(obstacle, speed) {
+            const front = this.probe.xPos + this.probe.config.WIDTH;
+            const deltaTime = 1000 / FPS;
+            const frames = [];
+            let x = obstacle.xPos;
+            let firstContact = -1;
+            while (x + obstacle.width > this.probe.xPos) {
+                speed = accelerate(speed, this.config);
+                x -= obstacle.movement(deltaTime, speed);
+                if (firstContact === -1 && x < front) firstContact = frames.length;
+                frames.push({ x, speed });
+            }
+
+            // Each frame is a possible jump start on the actual track. Reserve a
+            // consecutive window and use its latest landing to position the next group.
+            const earliestStart = Math.max(0, this.readyStep - this.step);
+            const collisionObstacle = { ...obstacle };
+            let consecutive = 0;
+            let latestLanding = 0;
+            for (let start = earliestStart; start <= firstContact; start++) {
+                const landing = this.tryJump(collisionObstacle, frames, start, deltaTime);
+                if (landing === null) {
+                    consecutive = 0;
+                    latestLanding = 0;
+                } else {
+                    consecutive++;
+                    latestLanding = Math.max(latestLanding, landing);
+                    if (consecutive === 3) return latestLanding;
+                }
+            }
+            return null;
+        }
+
+        tryJump(obstacle, frames, start, deltaTime) {
+            this.probe.reset();
+            this.probe.startJump(frames[start].speed);
+            for (let frame = start; frame < frames.length; frame++) {
+                if (this.probe.jumping) this.probe.updateJump(deltaTime);
+                obstacle.xPos = frames[frame].x;
+                if (checkForCollision(obstacle, this.probe)) return null;
+            }
+
+            let ready = this.step + frames.length;
+            while (this.probe.jumping) {
+                this.probe.updateJump(deltaTime);
+                ready++;
+            }
+            return ready;
+        }
+    }
+
+
+    function Horizon(canvas, spritePos, dimensions, gapCoefficient,
+        obstacleRandom = Math.random, mobileObstacles = IS_MOBILE, courseConfig = null) {
         this.canvas = canvas;
         this.canvasCtx = this.canvas.getContext('2d');
         this.config = Horizon.config;
         this.dimensions = dimensions;
         this.gapCoefficient = gapCoefficient;
+        this.obstacleRandom = obstacleRandom;
+        this.mobileObstacles = mobileObstacles;
+        this.course = courseConfig && new CactusCourse(canvas, spritePos, dimensions, obstacleRandom, courseConfig);
         this.obstacles = [];
         this.obstacleHistory = [];
         this.horizonOffsets = [0, 0];
@@ -2781,6 +2943,7 @@
          * @param {number} currentSpeed
          */
         updateObstacles: function (deltaTime, currentSpeed) {
+            if (this.course) this.course.step++;
             // Obstacles, move to Horizon layer.
             var updatedObstacles = this.obstacles.slice(0);
 
@@ -2820,7 +2983,13 @@
          * @param {number} currentSpeed
          */
         addNewObstacle: function (currentSpeed) {
-            var obstacleTypeIndex = getRandomNum(0, Obstacle.types.length - 1);
+            if (this.course) {
+                const obstacle = this.course.createObstacle(currentSpeed);
+                if (obstacle) this.obstacles.push(obstacle);
+                return;
+            }
+
+            var obstacleTypeIndex = getRandomNum(0, Obstacle.types.length - 1, this.obstacleRandom);
             var obstacleType = Obstacle.types[obstacleTypeIndex];
 
             // Check for multiples of the same type of obstacle.
@@ -2833,7 +3002,8 @@
 
                 this.obstacles.push(new Obstacle(this.canvasCtx, obstacleType,
                     obstacleSpritePos, this.dimensions,
-                    this.gapCoefficient, currentSpeed, obstacleType.width));
+                    this.gapCoefficient, currentSpeed, obstacleType.width,
+                    this.obstacleRandom, this.mobileObstacles));
 
                 this.obstacleHistory.unshift(obstacleType.type);
 

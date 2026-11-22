@@ -27,6 +27,18 @@ html, body {
   font-weight: 650;
 }
 
+.race-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem 1rem;
+  margin-bottom: .75rem;
+  font-size: .875rem;
+}
+
+.race-actions a {
+  color: #194ca8;
+}
+
 #race-standings {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));

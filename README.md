@@ -4,7 +4,13 @@ O objetivo do projeto é treinar uma IA para jogar o Dino do Chrome usando um al
 
 ## Rodar a disputa
 
-Na pasta do projeto, execute `python server.py` e abra [a corrida no navegador](http://127.0.0.1:8000). O Python fornece os competidores e mostra no terminal as pontuações que o jogo envia ao fim da rodada. A rodada de demonstração dura até 30 segundos.
+Na pasta do projeto, execute `python server.py` e abra [a corrida no navegador](http://127.0.0.1:8000). Cada pista dura até 30 segundos de simulação. O Python registra no terminal a semente e a pontuação de cada Dino.
+
+A pista sorteia trechos mais espaçados e trechos com grupos de cactos maiores e mais próximos. Cada grupo tem uma janela de pelo menos três quadros para iniciar um pulo que o ultrapasse.
+
+- **Sortear nova pista** inicia uma corrida com outra semente.
+- **Repetir** carrega a mesma semente ou repete a lista de sementes da avaliação.
+- **Avaliar em 3 pistas** roda três pistas em sequência com os mesmos Dinos e mostra a média de cada um no navegador e no terminal. Para escolher as sementes, abra [uma avaliação com sementes fixas](http://127.0.0.1:8000/?sementes=101,202,303).
 
 ## Créditos e licença
 
